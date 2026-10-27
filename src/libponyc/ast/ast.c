@@ -1304,7 +1304,11 @@ void ast_consolidate_branches(ast_t* ast, size_t count)
         // If we it's defined in all the branched, it's also defined.
         sym->status = SYM_DEFINED;
       } else {
-        // It wasn't defined in all branches. Stay undefined.
+        // It wasn't defined in all branches. Stay undefined. Remember a
+        // partial assignment so a later use can explain why.
+        if(sym->branch_count > 0)
+          sym->assigned_on_some_path = true;
+
         sym->branch_count = 0;
       }
     }

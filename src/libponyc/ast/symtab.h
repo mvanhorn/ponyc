@@ -28,6 +28,8 @@ typedef struct symbol_t
   ast_t* def;
   sym_status_t status;
   size_t branch_count;
+  // Sticky. Set when a branch assigns this name but it stays undefined.
+  bool assigned_on_some_path;
 } symbol_t;
 
 DECLARE_HASHMAP(symtab, symtab_t, symbol_t);
@@ -54,6 +56,16 @@ sym_status_t symtab_get_status(symtab_t* symtab, const char* name);
 
 void symtab_set_status(symtab_t* symtab, const char* name,
   sym_status_t status);
+
+// True if name is in symtab, including an entry whose def is NULL.
+// When present, *assigned receives assigned_on_some_path.
+bool symtab_lookup_assigned_on_some_path(symtab_t* symtab, const char* name,
+  bool* assigned);
+
+// Sets assigned_on_some_path. An existing entry keeps its status and
+// branch_count. A new entry is def NULL, branch_count 0, and status_if_new.
+void symtab_mark_assigned_on_some_path(symtab_t* symtab, const char* name,
+  sym_status_t status_if_new);
 
 void symtab_inherit_status(symtab_t* dst, symtab_t* src);
 

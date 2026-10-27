@@ -340,7 +340,30 @@ static bool is_constructed_from(ast_t* ast)
   return false;
 }
 
-static bool valid_reference(pass_opt_t* opt, ast_t* ast, sym_status_t status)
+// First symtab entry ast_get would see, including def == NULL. That entry
+// supplies the status, so it also supplies assigned_on_some_path.
+static bool reference_assigned_on_some_path(ast_t* ast, const char* name)
+{
+  do
+  {
+    symtab_t* symtab = ast_get_symtab(ast);
+
+    if(symtab != NULL)
+    {
+      bool assigned = false;
+
+      if(symtab_lookup_assigned_on_some_path(symtab, name, &assigned))
+        return assigned;
+    }
+
+    ast = ast_parent(ast);
+  } while((ast != NULL) && (ast_id(ast) != TK_PROGRAM));
+
+  return false;
+}
+
+static bool valid_reference(pass_opt_t* opt, ast_t* ast, sym_status_t status,
+  const char* name)
 {
   if(is_constructed_from(ast))
     return true;
@@ -365,6 +388,11 @@ static bool valid_reference(pass_opt_t* opt, ast_t* ast, sym_status_t status)
 
       ast_error(opt->check.errors, ast,
         "can't use an undefined variable in an expression");
+
+      if(reference_assigned_on_some_path(ast, name))
+        ast_error_continue(opt->check.errors, ast,
+          "not all code paths assign a value to '%s'", name);
+
       return false;
 
     case SYM_NONE:
@@ -573,7 +601,7 @@ bool refer_reference(pass_opt_t* opt, ast_t** astp)
           return false;
       }
 
-      if(!valid_reference(opt, ast, status))
+      if(!valid_reference(opt, ast, status, name))
         return false;
 
       ast_setid(ast, TK_PARAMREF);
@@ -587,7 +615,7 @@ bool refer_reference(pass_opt_t* opt, ast_t** astp)
       if(!def_before_use(opt, def, ast, name))
         return false;
 
-      if(!valid_reference(opt, ast, status))
+      if(!valid_reference(opt, ast, status, name))
         return false;
 
       if(ast_id(def) == TK_VAR)
@@ -674,7 +702,7 @@ static bool refer_this_dot(pass_opt_t* opt, ast_t* ast)
     case TK_FVAR:
     case TK_FLET:
     case TK_EMBED:
-      if(!valid_reference(opt, ast, status))
+      if(!valid_reference(opt, ast, status, name))
         return false;
       break;
 
@@ -697,7 +725,7 @@ static bool refer_multi_dot(pass_opt_t* opt, ast_t* ast)
   ast_get(ast, name, &status);
 
 
-  if(!valid_reference(opt, ast, status))
+  if(!valid_reference(opt, ast, status, name))
     return false;
 
   return true;
@@ -1980,6 +2008,56 @@ static bool refer_iftype(pass_opt_t* opt, ast_t* ast)
   return true;
 }
 
+static bool subtree_contains_break(ast_t* ast);
+
+// Last child is a break and no earlier child contains a break. Same test as
+// body_break_clean in refer_repeat.
+static bool clean_trailing_break(ast_t* body)
+{
+  if(!ast_checkflag(body, AST_FLAG_JUMPS_AWAY) ||
+    !ast_checkflag(body, AST_FLAG_MAY_BREAK))
+    return false;
+
+  ast_t* last = ast_childlast(body);
+
+  if((last == NULL) || (ast_id(last) != TK_BREAK))
+    return false;
+
+  for(ast_t* child = ast_child(body); child != last;
+    child = ast_sibling(child))
+  {
+    if(subtree_contains_break(child))
+      return false;
+  }
+
+  return true;
+}
+
+// Outer names (def == NULL, SYM_DEFINED) from a clean trailing break are
+// partial on the loop: the else also runs when the condition is false.
+// Leave status and branch_count alone.
+static void record_break_partial_defines(ast_t* loop, ast_t* body)
+{
+  symtab_t* body_symtab = ast_get_symtab(body);
+  symtab_t* loop_symtab = ast_get_symtab(loop);
+
+  if((body_symtab == NULL) || (loop_symtab == NULL))
+    return;
+
+  size_t i = HASHMAP_BEGIN;
+  symbol_t* sym;
+
+  while((sym = symtab_next(body_symtab, &i)) != NULL)
+  {
+    if((sym->def != NULL) || (sym->status != SYM_DEFINED))
+      continue;
+
+    sym_status_t status;
+    ast_get(ast_parent(loop), sym->name, &status);
+    symtab_mark_assigned_on_some_path(loop_symtab, sym->name, status);
+  }
+}
+
 static bool refer_while(pass_opt_t* opt, ast_t* ast)
 {
   pony_assert(ast_id(ast) == TK_WHILE);
@@ -2013,6 +2091,12 @@ static bool refer_while(pass_opt_t* opt, ast_t* ast)
   // the code after it, so control can still resume past the loop.
   if((branch_count == 0) && !ast_checkflag(body, AST_FLAG_MAY_BREAK_VALUE))
     ast_setflag(ast, AST_FLAG_JUMPS_AWAY);
+
+  // A body that ends in a clean break is JUMPS_AWAY, so it was not inherited
+  // above. A valueless break jumps to the else, which is also entered when the
+  // condition is false and the body never ran.
+  if(clean_trailing_break(body))
+    record_break_partial_defines(ast, body);
 
   // Push our symbol status to our parent scope.
   ast_inheritstatus(ast_parent(ast), ast);
@@ -2473,7 +2557,7 @@ static bool refer_lambda(pass_opt_t* opt, ast_t* ast)
       case TK_FVAR:
       case TK_FLET:
       case TK_EMBED:
-        if(!valid_reference(opt, cap, status))
+        if(!valid_reference(opt, cap, status, name))
           return false;
         break;
 

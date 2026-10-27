@@ -22,6 +22,14 @@
   { const char* errs[] = {err1, err2, err3, err4, NULL}; \
     DO(test_expected_errors(src, "refer", errs)); }
 
+// Single error with its primary message plus a continuation frame.
+// 'primary' and 'note' are matched as substrings.
+#define TEST_ERROR_WITH_NOTE(src, primary, note) \
+  { const char* errs[] = {primary, NULL}; \
+    const char* frame_strs[] = {note, NULL}; \
+    const char** frames[] = {frame_strs, NULL}; \
+    DO(test_expected_error_frames(src, "refer", errs, frames)); }
+
 
 class ReferTest : public PassTest
 {};
@@ -478,6 +486,104 @@ TEST_F(ReferTest, RepeatLoopDefineVarAndUseInCondition)
         "repeat\n"
           "n = 5\n"
         "until (n > 2) end";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(ReferTest, WhileTrueAssignBreakFieldUndefined)
+{
+  // From issue #4273. `true` is not treated as always taken.
+  const char* src =
+    "actor Main\n"
+      "var _x: U8\n"
+      "new create(env: Env) =>\n"
+        "while true do\n"
+          "_x = 5\n"
+          "break\n"
+        "end\n"
+        "let y = _x";
+
+  TEST_ERROR_WITH_NOTE(src,
+    "can't use an undefined variable in an expression",
+    "not all code paths assign a value to '_x'");
+}
+
+TEST_F(ReferTest, IfTrueAssignFieldUndefined)
+{
+  // From issue #4273.
+  const char* src =
+    "actor Main\n"
+      "var _x: U8\n"
+      "new create(env: Env) =>\n"
+        "if true then\n"
+          "_x = 5\n"
+        "end\n"
+        "let y = _x";
+
+  TEST_ERROR_WITH_NOTE(src,
+    "can't use an undefined variable in an expression",
+    "not all code paths assign a value to '_x'");
+}
+
+TEST_F(ReferTest, IfOneBranchAssignLocalUndefined)
+{
+  const char* src =
+    "actor Main\n"
+      "new create(env: Env) =>\n"
+        "var n: U8\n"
+        "if true then\n"
+          "n = 5\n"
+        "end\n"
+        "let m = n";
+
+  TEST_ERROR_WITH_NOTE(src,
+    "can't use an undefined variable in an expression",
+    "not all code paths assign a value to 'n'");
+}
+
+TEST_F(ReferTest, UndefinedVarNoPartialNote)
+{
+  const char* src =
+    "actor Main\n"
+      "new create(env: Env) =>\n"
+        "var n: U8\n"
+        "let m = n";
+
+  const char* errs[] = {
+    "can't use an undefined variable in an expression", NULL};
+  const char* frame_strs[] = {NULL};
+  const char** frames[] = {frame_strs, NULL};
+  DO(test_expected_error_frames(src, "refer", errs, frames));
+}
+
+TEST_F(ReferTest, IfBothBranchesAssignLocal)
+{
+  const char* src =
+    "actor Main\n"
+      "new create(env: Env) =>\n"
+        "var n: U8\n"
+        "if true then\n"
+          "n = 5\n"
+        "else\n"
+          "n = 6\n"
+        "end\n"
+        "let m = n";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(ReferTest, WhileBodyAndElseAssignLocal)
+{
+  const char* src =
+    "actor Main\n"
+      "new create(env: Env) =>\n"
+        "var n: U8\n"
+        "while true do\n"
+          "n = 5\n"
+        "else\n"
+          "n = 6\n"
+        "end\n"
+        "let m = n";
 
   TEST_COMPILE(src);
 }
